@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sinh dữ liệu ảo</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="container">
+  <div class="card">
+    <h1>Sinh dữ liệu ảo</h1>
+    <div id="alertBox" class="alert hidden"></div>
+
+    <div class="form-group">
+      <label for="db_url">Kết nối dữ liệu</label>
+      <div class="db-row">
+        <input type="text" id="db_url" placeholder="Ví dụ: sqlite:///test.db">
+        <button id="btnTestConnection" class="btn btn-warning" type="button">Kiểm tra kết nối</button>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="table_name">Chọn bảng</label>
+      <select id="table_name" disabled>
+        <option value="">-- Chọn bảng --</option>
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label for="row_count">Số dòng cần sinh</label>
+      <input type="number" id="row_count" min="1" value="10">
+    </div>
+
+    <div class="form-group">
+      <label for="user_instruction">Yêu cầu thêm cho AI</label>
+      <textarea id="user_instruction" rows="3" placeholder="Ví dụ: sinh dữ liệu sinh viên Việt Nam..."></textarea>
+    </div>
+
+    <div class="action-row">
+      <button id="btnGenerate" class="btn btn-success" type="button" disabled>Sinh dữ liệu</button>
+    </div>
+
+    <div class="result-box">
+      <h3>Kết quả</h3>
+      <pre id="resultOutput">Chưa có dữ liệu.</pre>
+    </div>
+  </div>
+</div>
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  const $ = id => document.getElementById(id);
+
+  const db = $("db_url");
+  const tbl = $("table_name");
+  const rows = $("row_count");
+  const note = $("user_instruction");
+  const testBtn = $("btnTestConnection");
+  const genBtn = $("btnGenerate");
+  const alertBox = $("alertBox");
+  const out = $("resultOutput");
+
+  let ok = false;
+  let verified = "";
+
+  const showAlert = (message, type = "success") => {
+    alertBox.className = `alert ${type}`;
+    alertBox.textContent = message;
+  };
+
+  const clearAlert = () => {
+    alertBox.className = "alert hidden";
+    alertBox.textContent = "";
+  };
+
+  const resetAfterDbChange = () => {
+    ok = false;
+    verified = "";
+    tbl.innerHTML = '<option value="">-- Chọn bảng --</option>';
+    tbl.disabled = true;
+    genBtn.disabled = true;
+    out.textContent = "Chưa có dữ liệu.";
+  };
+
+  const post = async (url, data) => {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data)
+    });
+    return { res, data: await res.json() };
+  };
+
+  db.addEventListener("input", () => {
+    resetAfterDbChange();
+    clearAlert();
+  });
+
+  tbl.addEventListener("change", () => {
+    genBtn.disabled = !(ok && verified === db.value.trim() && tbl.value);
+  });
+
+  testBtn.addEventListener("click", async () => {
+    clearAlert();
+
+    const db_url = db.value.trim();
+    if (!db_url) {
+      showAlert("Vui lòng nhập link database.", "error");
+      return;
+    }
+
+    testBtn.disabled = true;
+    testBtn.textContent = "Đang kiểm tra...";
+
+    try {
+      const { res, data } = await post("/api/test-connection", { db_url });
+
+      if (!res.ok || !data.success) {
+        showAlert(data.message || "Kết nối thất bại.", "error");
+        resetAfterDbChange();
+        return;
+      }
+
+      ok = true;
+      verified = db_url;
+
+      tbl.innerHTML = '<option value="">-- Chọn bảng --</option>';
+      (data.tables || []).forEach(table => {
+        tbl.innerHTML += `<option value="${table}">${table}</option>`;
+      });
+
+      tbl.disabled = false;
+      genBtn.disabled = true;
+
+      showAlert(data.message || "Kết nối thành công.");
+    } catch (error) {
+      resetAfterDbChange();
+      showAlert("Không kiểm tra được kết nối.", "error");
+    } finally {
+      testBtn.disabled = false;
+      testBtn.textContent = "Kiểm tra kết nối";
+    }
+  });
+
+  genBtn.addEventListener("click", async () => {
+    clearAlert();
+
+    const db_url = db.value.trim();
+    const table_name = tbl.value;
+    const row_count = rows.value.trim();
+    const user_instruction = note.value.trim();
+
+    if (!ok || verified !== db_url) {
+      showAlert("Bạn phải kiểm tra kết nối thành công trước.", "error");
+      return;
+    }
+
+    if (!table_name) {
+      showAlert("Vui lòng chọn bảng.", "error");
+      return;
+    }
+
+    genBtn.disabled = true;
+    genBtn.textContent = "Đang sinh dữ liệu...";
+
+    try {
+      const { res, data } = await post("/api/generate-data", {
+        db_url,
+        table_name,
+        row_count,
+        user_instruction
+      });
+
+      if (!res.ok || !data.success) {
+        showAlert(data.message || "Sinh dữ liệu thất bại.", "error");
+        return;
+      }
+
+      showAlert(data.message || "Sinh dữ liệu thành công.");
+      out.textContent = JSON.stringify(data, null, 2);
+    } catch (error) {
+      showAlert("Không gọi được API sinh dữ liệu.", "error");
+    } finally {
+      genBtn.disabled = false;
+      genBtn.textContent = "Sinh dữ liệu";
+    }
+  });
+});
+</script>
+</body>
+</html>

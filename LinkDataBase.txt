@@ -1,0 +1,2 @@
+mssql+pyodbc://DESKTOP-33J7KC7/DATN_NTM?driver=ODBC+Driver+17+for+SQL+Server	  SQL SEVER 
+sqlite:///test.db								  SQLITE

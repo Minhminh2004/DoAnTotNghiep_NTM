@@ -1,0 +1,161 @@
+* {
+    box-sizing: border-box;
+    font-family: Arial, sans-serif;
+}
+
+body {
+    margin: 0;
+    padding: 8px;
+    background: #f3f4f8;
+}
+
+/* FULL WIDTH */
+.container {
+    width: 100%;
+    max-width: 100%;
+    margin: 0;
+}
+
+/* CARD FULL */
+.card {
+    width: 98%;
+    margin: 0 auto;
+    background: #fff;
+    border: 2px solid #2f5db3;
+    border-radius: 20px;
+    padding: 20px 40px;
+}
+
+/* TITLE */
+h1 {
+    text-align: center;
+    color: #1e3a78;
+    margin-bottom: 16px;
+    font-size: 32px;
+}
+
+/* FORM */
+.form-group {
+    margin-bottom: 14px;
+}
+
+label {
+    font-weight: 700;
+    margin-bottom: 6px;
+    display: block;
+    font-size: 16px;
+}
+
+/* INPUT */
+input, select, textarea {
+    width: 100%;
+    padding: 12px 14px;
+    border: 2px solid #ccc;
+    border-radius: 12px;
+    font-size: 16px;
+}
+
+/* DB ROW */
+.db-row {
+    display: flex;
+    gap: 12px;
+}
+
+.db-row input {
+    flex: 1;
+}
+
+/* BUTTON */
+.btn {
+    border: none;
+    border-radius: 12px;
+    padding: 12px 18px;
+    font-size: 16px;
+    font-weight: bold;
+    color: white;
+    cursor: pointer;
+}
+
+.btn-warning {
+    background: #e6a544;
+}
+
+.btn-success {
+    background: #2ca24f;
+}
+
+/* ALERT */
+.alert {
+    margin-bottom: 12px;
+    padding: 10px;
+    border-radius: 10px;
+    font-weight: bold;
+}
+
+.alert.success {
+    background: #dff6e5;
+    color: #1d6c38;
+}
+
+.alert.error {
+    background: #fde2e2;
+    color: #a12626;
+}
+
+.hidden {
+    display: none;
+}
+
+/* RESULT */
+.result-box {
+    margin-top: 12px;
+    border-top: 1px solid #ddd;
+    padding-top: 12px;
+}
+
+pre {
+    background: #f7f7f7;
+    padding: 12px;
+    border-radius: 10px;
+}
+.btn-secondary {
+    background: #4f7bd9;
+}
+
+.btn-info {
+    background: #0f9d8a;
+}
+
+.btn-danger {
+    background: #d9534f;
+}
+
+.column-row {
+    display: grid;
+    grid-template-columns: 1.2fr 0.9fr 70px 70px 1fr 1fr 1fr 100px;
+    gap: 10px;
+    margin-bottom: 10px;
+    align-items: center;
+}
+
+.col-type {
+    width: 100%;
+}
+
+.column-row label {
+    margin: 0;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.col-type, .col-length {
+    width: 100%;
+}
+
+@media (max-width: 1200px) {
+    .column-row {
+        grid-template-columns: 1fr;
+    }
+}
