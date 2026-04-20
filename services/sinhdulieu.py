@@ -1,5 +1,5 @@
 from datetime import datetime, date
-import re
+import random
 
 from sqlalchemy import MetaData, Table, insert, select
 from db.connection import create_db_engine
@@ -16,7 +16,7 @@ def get_column_type_map(schema_info):
 
 def parse_date_value(value):
     if value in (None, ""):
-        return None
+        return None 
     if isinstance(value, datetime):
         return value.date()
     if isinstance(value, date):
@@ -42,7 +42,18 @@ def cast_value_by_sql_type(value, sql_type):
     return str(value).strip()
 
 
-def sanitize_rows(rows, allowed_columns, column_type_map):
+def get_required_non_fk_columns(schema):
+    fk_cols = {col for fk in schema.get("foreign_keys", []) for col in fk.get("columns", [])}
+    return [
+        c["name"]
+        for c in schema["columns"]
+        if c.get("nullable", True) is False
+        and str(c.get("autoincrement", "")).lower() != "true"
+        and c["name"] not in fk_cols
+    ]
+
+
+def sanitize_rows(rows, allowed_columns, column_type_map, required_columns):
     allowed_map = {norm(c): c for c in allowed_columns}
     type_map = {norm(k): v for k, v in column_type_map.items()}
     result = []
@@ -51,17 +62,16 @@ def sanitize_rows(rows, allowed_columns, column_type_map):
         if not isinstance(row, dict):
             continue
 
-        clean = {}
+        clean = {col: None for col in allowed_columns}
         try:
             for k, v in row.items():
-                k2 = norm(k)
-                if k2 in allowed_map:
-                    clean[allowed_map[k2]] = cast_value_by_sql_type(v, type_map.get(k2, ""))
+                key = norm(k)
+                if key in allowed_map:
+                    clean[allowed_map[key]] = cast_value_by_sql_type(v, type_map.get(key, ""))
         except Exception:
             continue
 
-        # Bắt buộc mọi cột đều phải có dữ liệu, không cho NULL
-        if clean and all(clean.get(col) not in (None, "", []) for col in allowed_columns):
+        if all(clean.get(col) not in (None, "", []) for col in required_columns):
             result.append(clean)
 
     return result
@@ -77,26 +87,27 @@ def deduplicate_rows(rows):
     return unique
 
 
-def get_existing_pk_values(engine, table_name, pk_columns):
+def get_lay_pk_values(engine, table_name, pk_columns):
     if not pk_columns:
         return {}
+
     table = Table(table_name, MetaData(), autoload_with=engine)
     existing = {norm(pk): set() for pk in pk_columns}
+
     with engine.connect() as conn:
         for row in conn.execute(select(table)).mappings():
             row = {norm(k): v for k, v in row.items()}
             for pk in pk_columns:
-                if row.get(norm(pk)) is not None:
-                    existing[norm(pk)].add(row[norm(pk)])
+                value = row.get(norm(pk))
+                if value is not None:
+                    existing[norm(pk)].add(value)
+
     return existing
 
 
 def make_unique_primary_keys(rows, pk_columns, existing_pk_values, column_type_map):
     pk_list = [norm(pk) for pk in pk_columns]
     type_map = {norm(k): v for k, v in column_type_map.items()}
-    result = []
-
-    # Chỉ xử lý mạnh cho PK kiểu int
     next_values = {}
 
     for pk in pk_list:
@@ -104,31 +115,110 @@ def make_unique_primary_keys(rows, pk_columns, existing_pk_values, column_type_m
             used = existing_pk_values.setdefault(pk, set())
             next_values[pk] = (max(used) + 1) if used else 1
 
+    out = []
     for row in rows:
         row = dict(row)
         real_keys = {norm(k): k for k in row}
 
         for pk in pk_list:
-            if pk not in real_keys:
+            if pk in real_keys and "int" in type_map.get(pk, ""):
+                key = real_keys[pk]
+                used = existing_pk_values.setdefault(pk, set())
+
+                value = next_values[pk]
+                while value in used:
+                    value += 1
+
+                row[key] = value
+                used.add(value)
+                next_values[pk] = value + 1
+
+        out.append(row)
+
+    return out
+
+
+def is_invalid_categorical_value(col_name, value):
+    if value in (None, "", []):
+        return True
+    if "gioitinh" in norm(col_name):
+        return str(value).strip().lower() not in ("nam", "nữ", "nu")
+    return False
+
+
+def remove_invalid_rows(rows):
+    return [
+        row for row in rows
+        if not any(is_invalid_categorical_value(col, val) for col, val in row.items())
+    ]
+
+
+def get_fk_reference_data(engine, foreign_keys):
+    ref_data = []
+
+    with engine.connect() as conn:
+        for fk in foreign_keys or []:
+            child_cols = fk.get("columns", [])
+            parent_table = fk.get("referred_table")
+            parent_cols = fk.get("referred_columns", [])
+
+            if not child_cols or not parent_table or not parent_cols:
                 continue
-            if "int" not in type_map.get(pk, ""):
-                continue
 
-            key = real_keys[pk]
-            used = existing_pk_values.setdefault(pk, set())
+            table = Table(parent_table, MetaData(), autoload_with=engine)
+            rows = conn.execute(select(table)).mappings().all()
 
-            # LUÔN gán lại PK mới, không tin giá trị AI sinh
-            new_value = next_values[pk]
-            while new_value in used:
-                new_value += 1
+            parent_values = []
+            for row in rows:
+                item = {col: row.get(col) for col in parent_cols}
+                if all(v is not None for v in item.values()):
+                    parent_values.append(item)
 
-            row[key] = new_value
-            used.add(new_value)
-            next_values[pk] = new_value + 1
+            if parent_values:
+                ref_data.append({
+                    "child_columns": child_cols,
+                    "parent_columns": parent_cols,
+                    "parent_values": parent_values,
+                })
 
-        result.append(row)
+    return ref_data
 
-    return result
+
+def apply_foreign_keys(rows, fk_reference_data):
+    if not fk_reference_data:
+        return rows
+
+    out = []
+    for row in rows:
+        row = dict(row)
+        for fk in fk_reference_data:
+            picked = random.choice(fk["parent_values"])
+            for child_col, parent_col in zip(fk["child_columns"], fk["parent_columns"]):
+                row[child_col] = picked[parent_col]
+        out.append(row)
+    return out
+
+
+def validate_foreign_keys(rows, fk_reference_data):
+    if not fk_reference_data:
+        return rows
+
+    valid_rows = []
+    for row in rows:
+        ok = True
+        for fk in fk_reference_data:
+            allowed = {
+                tuple(ref[col] for col in fk["parent_columns"])
+                for ref in fk["parent_values"]
+            }
+            row_key = tuple(row.get(col) for col in fk["child_columns"])
+            if row_key not in allowed:
+                ok = False
+                break
+        if ok:
+            valid_rows.append(row)
+
+    return valid_rows
 
 
 def is_too_similar_to_sample(row, sample_rows, pk_columns=None):
@@ -136,82 +226,69 @@ def is_too_similar_to_sample(row, sample_rows, pk_columns=None):
         return False
 
     pk_set = {norm(pk) for pk in (pk_columns or [])}
-
     for sample in sample_rows:
-        common_keys = [
-            k for k in row
-            if k in sample and norm(k) not in pk_set
-        ]
-
+        common_keys = [k for k in row if k in sample and norm(k) not in pk_set]
         if not common_keys:
             continue
 
-        matched = sum(
-            1 for k in common_keys
-            if norm_text(row[k]) == norm_text(sample[k])
-        )
-
-        if common_keys and matched / len(common_keys) >= 0.5:
+        same_count = sum(1 for k in common_keys if norm_text(row[k]) == norm_text(sample[k]))
+        if same_count == len(common_keys):
+            return True
+        if len(common_keys) >= 2 and (len(common_keys) - same_count) < 2:
             return True
 
     return False
 
 
-def is_invalid_categorical_value(col_name, value):
-    if value in (None, "", []):
-        return True
-
-    col = norm(col_name)
-    text = str(value).strip()
-
-    if "gioitinh" in col:
-        return text not in ("Nam", "Nữ")
-
-    if any(x in col for x in ["diachi", "address", "khoa", "faculty", "department"]):
-        return bool(re.search(r"\s+\d+$", text))
-
-    if any(x in col for x in ["lop", "class"]):
-        return bool(re.search(r"\s+\d+$", text))
-
-    return False
-
-
-def remove_invalid_rows(rows):
-    filtered = []
-    for row in rows:
-        bad = False
-        for col, val in row.items():
-            if is_invalid_categorical_value(col, val):
-                bad = True
-                break
-        if not bad:
-            filtered.append(row)
-    return filtered
+def build_schema_for_prompt(schema, fk_reference_data):
+    prompt_schema = dict(schema)
+    prompt_schema["foreign_key_reference_samples"] = [
+        {
+            "child_columns": fk["child_columns"],
+            "parent_columns": fk["parent_columns"],
+            "allowed_examples": fk["parent_values"][:8],
+        }
+        for fk in fk_reference_data
+    ]
+    return prompt_schema
 
 
 def generate_and_insert_data(db_url, table_name, row_count, model_name="qwen2.5:3b", user_instruction=""):
     engine = create_db_engine(db_url)
-    schema = get_table_schema_and_samples(engine=engine, table_name=table_name, sample_limit=10)
+    schema = get_table_schema_and_samples(engine=engine, table_name=table_name, sample_limit=5)
 
     allowed_columns = [c["name"] for c in schema["columns"]]
     pk_columns = schema.get("primary_keys", [])
+    fk_list = schema.get("foreign_keys", [])
     column_type_map = get_column_type_map(schema)
     existing_pk_values = get_existing_pk_values(engine, table_name, pk_columns)
     sample_rows = schema.get("sample_rows", [])
+    required_columns = get_required_non_fk_columns(schema)
+
+    fk_reference_data = get_fk_reference_data(engine, fk_list)
+    prompt_schema = build_schema_for_prompt(schema, fk_reference_data)
 
     all_rows = []
-    for _ in range(10):
+    for _ in range(5):
         need = row_count - len(all_rows)
         if need <= 0:
             break
 
-        rows = parse_json_from_ollama(call_ollama(model_name, build_prompt(schema, need, user_instruction)))
-        rows = sanitize_rows(rows, allowed_columns, column_type_map)
+        raw_text = call_ollama(model_name, build_prompt(prompt_schema, need, user_instruction), timeout=240)
+
+        try:
+            parsed_rows = parse_json_from_ollama(raw_text)
+        except Exception:
+            continue
+
+        rows = sanitize_rows(parsed_rows, allowed_columns, column_type_map, required_columns)
+        rows = apply_foreign_keys(rows, fk_reference_data)
         rows = make_unique_primary_keys(rows, pk_columns, existing_pk_values, column_type_map)
         rows = remove_invalid_rows(rows)
+        rows = validate_foreign_keys(rows, fk_reference_data)
         rows = [r for r in rows if not is_too_similar_to_sample(r, sample_rows, pk_columns)]
-
         all_rows = deduplicate_rows(all_rows + rows)
+
         if len(all_rows) >= row_count:
             break
 
@@ -227,5 +304,5 @@ def generate_and_insert_data(db_url, table_name, row_count, model_name="qwen2.5:
     return {
         "message": f"Đã sinh và insert thành công {len(rows_to_insert)} dòng vào bảng '{table_name}'.",
         "inserted_count": len(rows_to_insert),
-        "preview": rows_to_insert[:3]
+        "preview": rows_to_insert[:2],
     }
