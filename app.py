@@ -12,69 +12,45 @@ def index():
 
 
 @app.post("/api/test-connection")
-def api_test_connection():
-    db_url = (request.get_json() or {}).get("db_url", "").strip()
-    if not db_url:
-        return jsonify(success=False, message="Vui lòng nhập link database."), 400
+def test_conn():
+    db = (request.get_json() or {}).get("db_url", "").strip()
+    if not db:
+        return jsonify(success=False, message="Thiếu link database."), 400
 
-    ok, msg = test_connection(db_url)
+    ok, msg = test_connection(db)
     if not ok:
         return jsonify(success=False, message=msg), 400
 
     try:
-        return jsonify(
-            success=True,
-            message="Kết nối thành công.",
-            tables=get_table_names(db_url)
-        )
+        return jsonify(success=True, message="Kết nối thành công.", tables=get_table_names(db))
     except Exception as e:
-        return jsonify(success=False, message=f"Không đọc được danh sách bảng: {e}"), 500
+        return jsonify(success=False, message=str(e)), 500
 
 
 @app.post("/api/generate-data")
-def api_generate_data():
-    data = request.get_json() or {}
-    db_url = data.get("db_url", "").strip()
-    table_name = data.get("table_name", "").strip()
-    user_instruction = data.get("user_instruction", "").strip()
+def gen_data():
+    d = request.get_json() or {}
+    db, tb = d.get("db_url","").strip(), d.get("table_name","").strip()
+    instr = d.get("user_instruction","").strip()
 
-    if not db_url:
-        return jsonify(success=False, message="Thiếu link database."), 400
-    if not table_name:
-        return jsonify(success=False, message="Vui lòng chọn bảng."), 400
+    if not db or not tb:
+        return jsonify(success=False, message="Thiếu database hoặc bảng."), 400
 
     try:
-        row_count = int(data.get("row_count", 0))
-        if row_count <= 0:
-            raise ValueError
-    except Exception:
-        return jsonify(success=False, message="Số dòng cần sinh không hợp lệ."), 400
+        n = int(d.get("row_count", 0))
+        if n <= 0: raise ValueError
 
-    try:
-        result = generate_and_insert_data(
-            db_url=db_url,
-            table_name=table_name,
-            row_count=row_count,
-            model_name="qwen2.5:3b",
-            user_instruction=user_instruction
-        )
-        return jsonify(
-            success=True,
-            message=result["message"],
-            inserted_count=result["inserted_count"],
-            preview=result.get("preview", [])
-        )
-    except ValueError as e:
-        return jsonify(success=False, message=str(e)), 400
-    except Exception as e:
-        msg = str(e)
+        return jsonify(success=True, **generate_and_insert_data(db, tb, n, "qwen2.5:3b", instr))
+
+    except:
+        msg = str(Exception())
         if "UNIQUE constraint failed" in msg:
-            msg = "Dữ liệu sinh ra bị trùng khóa chính hoặc cột duy nhất."
-        elif "date and/or time" in msg:
-            msg = "Dữ liệu ngày giờ sinh ra chưa đúng định dạng."
-        elif "Không kết nối được Ollama" in msg:
-            msg = "Chưa kết nối được Ollama. Hãy kiểm tra Ollama đang chạy."
-        return jsonify(success=False, message=msg), 500
+            msg = "Trùng khóa chính / unique"
+        elif "date" in msg:
+            msg = "Sai định dạng ngày"
+        elif "Ollama" in msg:
+            msg = "Chưa bật Ollama"
+        return jsonify(success=False, message=msg or "Lỗi xử lý"), 400
 
 
 if __name__ == "__main__":

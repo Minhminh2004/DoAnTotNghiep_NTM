@@ -1,27 +1,27 @@
-from services.sinhdulieu import remove_invalid_rows
+from services.sinhdulieu import valid_cate
 
 
 def test_gioitinh_hop_le_duoc_giu_lai():
     rows = [
-        {"gioitinh": "Nam"},
-        {"gioitinh": "Nữ"},
-        {"gioitinh": "nu"},
+        {"GioiTinh": "Nam"},
+        {"GioiTinh": "Nữ"},
+        {"GioiTinh": "nu"},
     ]
 
-    out = remove_invalid_rows(rows)
+    out = [r for r in rows if valid_cate(r)]
 
     assert len(out) == 3
 
 
 def test_gioitinh_sai_bi_loai():
     rows = [
-        {"gioitinh": "Nam"},
-        {"gioitinh": "abc"},
-        {"gioitinh": ""},
-        {"gioitinh": None},
+        {"GioiTinh": "Nam"},
+        {"GioiTinh": "abc"},
+        {"GioiTinh": ""},
+        {"GioiTinh": None},
     ]
 
-    out = remove_invalid_rows(rows)
+    out = [r for r in rows if valid_cate(r)]
 
     assert len(out) == 1
-    assert out[0]["gioitinh"] == "Nam"
+    assert out[0]["GioiTinh"] == "Nam"

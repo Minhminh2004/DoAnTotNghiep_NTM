@@ -1,48 +1,77 @@
 from services.sinhdulieu import (
-    get_fk_reference_data,
-    apply_foreign_keys,
-    validate_foreign_keys,
+    fk_data,
+    apply_fk,
+    valid_fk,
 )
 
 
-def test_fk_phai_ton_tai_trong_bang_cha(engine, setup_khoa_lop):
+def test_fk_phai_ton_tai_trong_bang_cha(engine, setup_testcase_tables):
     foreign_keys = [
         {
-            "columns": ["makhoa"],
-            "referred_table": "khoa",
-            "referred_columns": ["makhoa"],
+            "columns": ["MaKhoa"],
+            "referred_table": "KHOA_TEST",
+            "referred_columns": ["MaKhoa"],
+        },
+        {
+            "columns": ["MaLop"],
+            "referred_table": "LOP_TEST",
+            "referred_columns": ["MaLop"],
         }
     ]
 
-    ref_data = get_fk_reference_data(engine, foreign_keys)
-    assert len(ref_data) == 1
+    ref_data = fk_data(engine, foreign_keys)
+    assert len(ref_data) == 2
 
     rows = [
-        {"malop": 1, "tenlop": "CNTT1"},
-        {"malop": 2, "tenlop": "CNTT2"},
+        {
+            "MaSV": 3,
+            "HoTen": "Nguyen Van C",
+            "Email": "c@gmail.com",
+            "Tuoi": 20,
+            "Diem": 8.0,
+            "GioiTinh": "Nam",
+            "NgaySinh": "2004-01-01",
+            "SoDienThoai": "0911111111",
+            "DiaChi": "Ha Noi",
+        },
+        {
+            "MaSV": 4,
+            "HoTen": "Tran Thi D",
+            "Email": "d@gmail.com",
+            "Tuoi": 21,
+            "Diem": 9.0,
+            "GioiTinh": "Nữ",
+            "NgaySinh": "2003-01-01",
+            "SoDienThoai": "0922222222",
+            "DiaChi": "Hai Phong",
+        },
     ]
 
-    applied = apply_foreign_keys(rows, ref_data)
-    assert all(r["makhoa"] in [1, 2] for r in applied)
+    applied = apply_fk(rows, ref_data)
 
-    validated = validate_foreign_keys(applied, ref_data)
+    assert all(r["MaKhoa"] in [1, 2] for r in applied)
+    assert all(r["MaLop"] in [1, 2] for r in applied)
+
+    validated = valid_fk(applied, ref_data)
+
     assert len(validated) == 2
 
 
 def test_fk_sai_bi_loai():
     fk_reference_data = [
         {
-            "child_columns": ["makhoa"],
-            "parent_columns": ["makhoa"],
-            "parent_values": [{"makhoa": 1}, {"makhoa": 2}],
+            "child_columns": ["MaKhoa"],
+            "parent_columns": ["MaKhoa"],
+            "parent_values": [{"MaKhoa": 1}, {"MaKhoa": 2}],
         }
     ]
 
     rows = [
-        {"malop": 1, "tenlop": "A", "makhoa": 1},
-        {"malop": 2, "tenlop": "B", "makhoa": 99},
+        {"MaSV": 3, "HoTen": "A", "MaKhoa": 1},
+        {"MaSV": 4, "HoTen": "B", "MaKhoa": 99},
     ]
 
-    out = validate_foreign_keys(rows, fk_reference_data)
+    out = valid_fk(rows, fk_reference_data)
+
     assert len(out) == 1
-    assert out[0]["makhoa"] == 1
+    assert out[0]["MaKhoa"] == 1
