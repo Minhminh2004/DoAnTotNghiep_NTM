@@ -4,6 +4,7 @@ from sqlalchemy import MetaData, Table, insert, select
 from db.connection import create_db_engine
 from db.laydulieu import get_table_schema_and_samples
 from ai.generator import build_prompt, call_ollama, parse_json_from_ollama
+from reports.excel_report import save_generated_data_report
 
 norm = lambda x: str(x).strip().lower()
 txt = lambda x: "" if x is None else str(x).strip().lower()
@@ -264,8 +265,11 @@ def generate_and_insert_data(db_url,table,n,model="qwen2.5:3b",instr=""):
     with engine.begin() as c:
         c.execute(insert(tb),rows)
 
+        report_file = save_generated_data_report(table, rows)
+
     return {
         "message": f"Đã insert {len(rows)} dòng vào '{table}'",
         "inserted_count": len(rows),
         "preview": rows[:2],
+        "excel_report": report_file
     }

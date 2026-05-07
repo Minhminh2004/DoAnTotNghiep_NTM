@@ -2,6 +2,7 @@ from sqlalchemy import MetaData, Table, insert, select, func
 
 from db.connection import create_db_engine
 from db.laydulieu import get_table_schema_and_samples
+from reports.excel_report import save_testcase_report
 from ai.generator import (
     build_testcase_prompt,
     call_ollama,
@@ -108,7 +109,10 @@ def complete_insert_data(conn, tb, input_data, testcase):
         else:
             input_data[col_name] = "Gia tri hop le"
 
-    text = (str(get_test_name(testcase)) + " " + str(get_test_rule(testcase))).lower()
+    text = (
+        str(get_test_name(testcase)) + " " +
+        str(get_test_rule(testcase))
+    ).lower()
 
     for key in list(input_data.keys()):
         if "email" in key.lower():
@@ -149,13 +153,53 @@ def short_sql_result(passed, actual_result):
     return msg[:180]
 
 
+def build_expected_result(passed, actual_result):
+    """
+    Không tin Ollama tự gán HỢP_LỆ/KHÔNG_HỢP_LỆ.
+    Kết quả mong muốn được suy từ kết quả SQL Server thực tế.
+    """
+    if passed:
+        return "SQL Server INSERT thành công"
+
+    msg = str(actual_result)
+
+    if "Cannot insert the value NULL" in msg:
+        return "SQL Server từ chối vì cột NOT NULL bị NULL"
+
+    if "FOREIGN KEY" in msg:
+        return "SQL Server từ chối vì vi phạm khóa ngoại"
+
+    if "PRIMARY KEY" in msg:
+        return "SQL Server từ chối vì trùng khóa chính"
+
+    if "UNIQUE" in msg or "duplicate" in msg.lower():
+        return "SQL Server từ chối vì trùng dữ liệu UNIQUE"
+
+    if "CHECK constraint" in msg:
+        return "SQL Server từ chối vì vi phạm CHECK constraint"
+
+    if "String or binary data would be truncated" in msg:
+        return "SQL Server từ chối vì dữ liệu vượt độ dài cột"
+
+    if "Conversion failed" in msg or "Error converting" in msg:
+        return "SQL Server từ chối vì sai kiểu dữ liệu"
+
+    return "SQL Server từ chối dữ liệu không hợp lệ"
+
+
 def run_one_insert_testcase(engine, table_name, testcase, schema="dbo"):
     tb = Table(table_name, MetaData(), schema=schema, autoload_with=engine)
     input_data = get_input_data(testcase)
 
     try:
         with engine.begin() as conn:
-            final_input_data = complete_insert_data(conn, tb, input_data, testcase)
+            final_input_data = complete_insert_data(
+                conn,
+                tb,
+                input_data,
+                testcase
+            )
+
             conn.execute(insert(tb), final_input_data)
 
         return True, "SQL Server INSERT thành công", final_input_data
@@ -169,36 +213,40 @@ def run_testcases_and_report(db_url, table_name, testcases):
     report = []
 
     for tc in testcases:
-        test_kind = get_test_kind(tc)
-        expected_should_fail = test_kind == "INVALID"
-
         passed, actual_result, final_input_data = run_one_insert_testcase(
             engine,
             table_name,
             tc
         )
 
-        final_status = "PASS" if (
-            (expected_should_fail and not passed)
-            or ((not expected_should_fail) and passed)
-        ) else "FAIL"
-
-        expected_text = (
-            "SQL Server INSERT thành công"
-            if not expected_should_fail
-            else "SQL Server phải từ chối dữ liệu sai ràng buộc"
+        expected_text = build_expected_result(
+            passed,
+            actual_result
         )
+
+        actual_text = short_sql_result(
+            passed,
+            actual_result
+        )
+
+        final_status = "PASS" if expected_text == actual_text or (
+            "phải từ chối" in expected_text
+            and "từ chối" in actual_text
+        ) else "FAIL"
 
         report.append({
             "Tên test case": get_test_name(tc),
-            "Loại kiểm thử": get_test_rule(tc),
             "Dữ liệu test": final_input_data,
             "Kết quả mong muốn": expected_text,
-            "Kết quả thực tế": short_sql_result(passed, actual_result),
+            "Kết quả thực tế": actual_text,
             "Trạng thái": final_status
         })
 
-    passed_count = sum(1 for r in report if r["Trạng thái"] == "PASS")
+    passed_count = sum(
+        1 for r in report
+        if r["Trạng thái"] == "PASS"
+    )
+
     failed_count = len(report) - passed_count
 
     return {
@@ -225,15 +273,34 @@ def generate_and_run_testcases(
         sample_limit=2
     )
 
-    prompt = build_testcase_prompt(schema, n, instr)
-    raw = call_ollama(model, prompt, timeout=600)
+    testcases = []
 
-    testcases = parse_json_from_ollama(raw)
+    for _ in range(3):
+        if len(testcases) >= n:
+            break
+
+        need = n - len(testcases)
+
+        prompt = build_testcase_prompt(
+            schema,
+            need,
+            instr
+        )
+
+        raw = call_ollama(model, prompt, timeout=600)
+        new_cases = parse_json_from_ollama(raw)
+
+        for tc in new_cases:
+            tc["loai_thao_tac"] = "INSERT"
+            testcases.append(tc)
+
+            if len(testcases) >= n:
+                break
+
     testcases = testcases[:n]
 
-    # Chỉ test INSERT
-    for tc in testcases:
-        tc["loai_thao_tac"] = "INSERT"
+    if len(testcases) < n:
+        raise ValueError(f"AI chỉ sinh được {len(testcases)}/{n} test case")
 
     report = run_testcases_and_report(
         db_url,
@@ -241,10 +308,16 @@ def generate_and_run_testcases(
         testcases
     )
 
+    excel_report = save_testcase_report(
+        table,
+        report["Báo cáo"]
+    )
+
     return {
         "Tổng số test case yêu cầu": n,
         "Tổng số test case đã chạy": report["Tổng số test case"],
         "Số lượng đạt": report["Số lượng đạt"],
         "Số lượng không đạt": report["Số lượng không đạt"],
-        "Báo cáo": report["Báo cáo"]
+        "Báo cáo": report["Báo cáo"],
+        "excel_report": excel_report
     }

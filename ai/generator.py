@@ -42,6 +42,11 @@ Quy tắc:
 - DATE/DATETIME dùng YYYY-MM-DD.
 - FOREIGN KEY lấy từ parent_samples.
 - Không copy nguyên dòng mẫu.
+- Nếu là dữ liệu người Việt: sinh họ tên Việt Nam thực tế, có dấu, đa dạng.
+- Không dùng tên mẫu kiểu Nguyen Van A, Nguyen Van B, Test, Demo.
+- Không lặp tên trong cùng lần sinh.
+- Email phải khớp tương đối với họ tên, không dùng test@example.com nếu không cần.
+
 
 SCHEMA:
 {json.dumps(schema, ensure_ascii=False, default=str)}
@@ -105,7 +110,7 @@ def build_testcase_prompt(schema, n, user_instruction=""):
     return f"""
 Sinh đúng {n} test case INSERT cho bảng "{schema['table_name']}".
 Chỉ trả về JSON array, không markdown, không giải thích.
-Nội dung mô tả dùng tiếng Việt.
+Mô tả dùng tiếng Việt.
 
 Format:
 [
@@ -120,18 +125,42 @@ Format:
   }}
 ]
 
-Quy tắc:
+Luật bắt buộc:
 - Chỉ sinh INSERT.
-- loai_test: HỢP_LỆ hoặc KHÔNG_HỢP_LỆ.
+- Phải sinh đúng {n} object trong JSON array.
+- Nếu YÊU CẦU NGƯỜI DÙNG có nhiều dòng bắt đầu bằng "-", mỗi dòng là 1 test case riêng.
+- Không được gộp 2 yêu cầu vào 1 test case.
+- Chỉ dùng tiếng Việt Unicode UTF-8 chuẩn.
 - du_lieu_test phải có đủ cột bắt buộc: {json.dumps(required_cols, ensure_ascii=False)}.
-- HỢP_LỆ: dữ liệu thỏa mãn schema, UNIQUE, FOREIGN KEY, CHECK.
-- KHÔNG_HỢP_LỆ: chỉ làm sai 1 ràng buộc, cột khác hợp lệ.
+- Nếu yêu cầu "điểm 11" thì chỉ cột điểm sai, các cột khác hợp lệ.
+- Nếu yêu cầu "tuổi 17" thì chỉ cột tuổi sai, các cột khác hợp lệ.
+- HỢP_LỆ: dữ liệu thỏa mãn schema, CHECK, UNIQUE, FOREIGN KEY.
+- KHÔNG_HỢP_LỆ: chỉ làm sai đúng 1 ràng buộc được yêu cầu.
 - FOREIGN KEY hợp lệ lấy từ parent_samples.
-- Ưu tiên làm đúng yêu cầu thêm của người dùng.
+- PRIMARY KEY hợp lệ phải là giá trị mới, không trùng dữ liệu mẫu.
+- Nếu có cột HoTen/họ tên:
+  + BẮT BUỘC dùng tên người Việt Nam thật.
+  + Ví dụ hợp lệ:
+    "Phạm Minh Tuấn"
+    "Nguyễn Thị Thu Hà"
+    "Trần Quốc Bảo"
+    "Lê Hoàng Nam"
+    "Đặng Gia Huy"
+  + CẤM dùng:
+    "Nguyễn Văn A"
+    "Nguyễn Văn B"
+    "Trần Thị B"
+    "Test"
+    "Demo"
+    "User"
+- Nếu có email, email nên khớp với họ tên và không trùng dữ liệu mẫu.
+- ket_qua_mong_muon:
+  + HỢP_LỆ: "SQL Server phải INSERT thành công"
+  + KHÔNG_HỢP_LỆ: "SQL Server phải từ chối dữ liệu sai ràng buộc"
 
 SCHEMA:
 {json.dumps(schema, ensure_ascii=False, default=str)}
 
-YÊU CẦU THÊM:
+YÊU CẦU NGƯỜI DÙNG, PHẢI ƯU TIÊN TỪNG DÒNG:
 {extra}
 """.strip()
