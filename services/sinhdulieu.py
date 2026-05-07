@@ -12,12 +12,25 @@ type_map = lambda s: {c["name"]: str(c.get("type","")).lower() for c in s["colum
 
 
 def parse_date(v):
-    if v in (None,""): return None
-    if isinstance(v,(datetime,date)): return v if isinstance(v,date) else v.date()
-    for f in ("%Y-%m-%d","%d/%m/%Y","%d-%m-%Y"):
-        try: return datetime.strptime(str(v).strip(),f).date()
-        except: pass
-    raise ValueError(f"Bad date: {v}")
+    if v in (None, ""):
+        return None
+
+    if isinstance(v, datetime):
+        return v.date()
+
+    if isinstance(v, date):
+        return v
+
+    s = str(v).strip()
+
+    for f in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(s, f).date()
+        except:
+            pass
+
+    # fallback để tránh lỗi sai định dạng ngày
+    return date(2000, 1, 1)
 
 
 def cast(v,t):
@@ -86,6 +99,60 @@ def fix_pk(rows,pk,used,types):
                 r[keys[p]]=nxt[p]; used[p].add(nxt[p]); nxt[p]+=1
     return rows
 
+def existing_values(engine, table, columns, schema="dbo"):
+    tb = Table(table, MetaData(), schema=schema, autoload_with=engine)
+    data = {norm(c): set() for c in columns}
+
+    with engine.connect() as c:
+        for r in c.execute(select(tb)).mappings():
+            rr = {norm(k): v for k, v in r.items()}
+            for col in columns:
+                if rr.get(norm(col)) is not None:
+                    data[norm(col)].add(str(rr[norm(col)]).lower())
+
+    return data
+
+
+def fix_unique(rows, schema, engine, table):
+    unique_cols = []
+
+    for u in schema.get("unique_constraints", []):
+        for c in u.get("columns", []):
+            unique_cols.append(c)
+
+    # bắt thêm các cột hay unique như Email nếu DB khai báo không lấy được
+    for c in schema.get("columns", []):
+        name = c["name"]
+        if "email" in norm(name):
+            unique_cols.append(name)
+
+    unique_cols = list(dict.fromkeys(unique_cols))
+
+    if not unique_cols:
+        return rows
+
+    used = existing_values(engine, table, unique_cols)
+
+    for i, r in enumerate(rows, start=1):
+        for col in unique_cols:
+            real_col = next((k for k in r if norm(k) == norm(col)), None)
+            if not real_col:
+                continue
+
+            val = r.get(real_col)
+
+            if val is None or str(val).lower() in used.get(norm(col), set()):
+                if "email" in norm(real_col):
+                    new_val = f"test_{random.randint(100000, 999999)}@example.com"
+                else:
+                    new_val = f"{real_col}_{random.randint(100000, 999999)}"
+
+                r[real_col] = new_val
+                used.setdefault(norm(col), set()).add(str(new_val).lower())
+            else:
+                used.setdefault(norm(col), set()).add(str(val).lower())
+
+    return rows
 
 def fk_data(engine,fks):
     out=[]
@@ -123,11 +190,18 @@ def valid_fk(rows,fks):
     return out
 
 
-def valid_cate(r):
-    for c,v in r.items():
-        if v in (None,"",[]): return False
-        if "gioitinh" in norm(c) and str(v).lower() not in ("nam","nữ","nu"):
+def valid_cate(r, req=None):
+    req = req or []
+
+    for c in req:
+        if r.get(c) in (None, "", []):
             return False
+
+    for c, v in r.items():
+        if "gioitinh" in norm(c) and v not in (None, "", []):
+            if str(v).lower() not in ("nam", "nữ", "nu"):
+                return False
+
     return True
 
 
@@ -176,7 +250,8 @@ def generate_and_insert_data(db_url,table,n,model="qwen2.5:3b",instr=""):
         rows=clean_rows(rows,allowed,types,req)
         rows=apply_fk(rows,fks)
         rows=fix_pk(rows,pk,used,types)
-        rows=[r for r in rows if valid_cate(r) and not too_similar(r,samples,pk)]
+        rows=fix_unique(rows, schema, engine, table)
+        rows=[r for r in rows if valid_cate(r, req) and not too_similar(r,samples,pk)]
         rows=valid_fk(rows,fks)
         all_rows=unique(all_rows+rows)
 

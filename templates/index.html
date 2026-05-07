@@ -3,42 +3,129 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Sinh dữ liệu ảo</title>
+  <title>Sinh dữ liệu ảo / Sinh test case</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
 <div class="container">
   <div class="card">
-    <h1>Sinh dữ liệu ảo</h1>
+    <h1 id="pageTitle">Sinh dữ liệu ảo</h1>
+
+    <div class="mode-box">
+      <label>Chọn chế độ</label>
+      <div class="mode-row">
+        <button id="modeData" class="btn btn-mode active" type="button">
+          1. Sinh dữ liệu ảo
+        </button>
+
+        <button id="modeTestcase" class="btn btn-mode" type="button">
+          2. Sinh test case
+        </button>
+      </div>
+    </div>
+
     <div id="alertBox" class="alert hidden"></div>
 
     <div class="form-group">
       <label for="db_url">Kết nối dữ liệu</label>
+
       <div class="db-row">
-        <input type="text" id="db_url" placeholder="Ví dụ: sqlite:///test.db">
-        <button id="btnTestConnection" class="btn btn-warning" type="button">Kiểm tra kết nối</button>
+        <input
+          type="text"
+          id="db_url"
+          placeholder="Ví dụ: sqlite:///test.db"
+        >
+
+        <button
+          id="btnTestConnection"
+          class="btn btn-warning"
+          type="button"
+        >
+          Kiểm tra kết nối
+        </button>
       </div>
     </div>
 
     <div class="form-group">
       <label for="table_name">Chọn bảng</label>
+
       <select id="table_name" disabled>
         <option value="">-- Chọn bảng --</option>
       </select>
     </div>
 
-    <div class="form-group">
-      <label for="row_count">Số dòng cần sinh</label>
-      <input type="number" id="row_count" min="1" value="10">
+    <!-- PANEL SINH DỮ LIỆU -->
+    <div id="dataPanel">
+
+      <div class="form-group">
+        <label for="row_count">Số dòng cần sinh</label>
+
+        <input
+          type="number"
+          id="row_count"
+          min="1"
+          value="10"
+        >
+      </div>
+
+      <div class="form-group">
+        <label for="user_instruction">Yêu cầu thêm cho AI</label>
+
+        <textarea
+          id="user_instruction"
+          rows="3"
+          placeholder="Ví dụ: sinh dữ liệu sinh viên Việt Nam..."
+        ></textarea>
+      </div>
+
+      <div class="action-row">
+        <button
+          id="btnGenerate"
+          class="btn btn-success"
+          type="button"
+          disabled
+        >
+          Sinh dữ liệu
+        </button>
+      </div>
     </div>
 
-    <div class="form-group">
-      <label for="user_instruction">Yêu cầu thêm cho AI</label>
-      <textarea id="user_instruction" rows="3" placeholder="Ví dụ: sinh dữ liệu sinh viên Việt Nam..."></textarea>
-    </div>
+    <!-- PANEL TESTCASE -->
+    <div id="testcasePanel" class="hidden">
 
-    <div class="action-row">
-      <button id="btnGenerate" class="btn btn-success" type="button" disabled>Sinh dữ liệu</button>
+      <div class="form-group">
+        <label for="testcase_count">Số test case cần sinh</label>
+
+        <input
+          type="number"
+          id="testcase_count"
+          min="1"
+          value="10"
+        >
+      </div>
+
+      <div class="form-group">
+        <label for="testcase_instruction">
+          Yêu cầu thêm cho test case
+        </label>
+
+        <textarea
+          id="testcase_instruction"
+          rows="3"
+          placeholder="Ví dụ: test NOT NULL, UNIQUE, MAX_LENGTH..."
+        ></textarea>
+      </div>
+
+      <div class="action-row">
+        <button
+          id="btnGenerateTestcase"
+          class="btn btn-info"
+          type="button"
+          disabled
+        >
+          Sinh & chạy test case
+        </button>
+      </div>
     </div>
 
     <div class="result-box">
@@ -50,19 +137,36 @@
 
 <script>
 document.addEventListener("DOMContentLoaded", () => {
+
   const $ = id => document.getElementById(id);
+
+  const pageTitle = $("pageTitle");
+
+  const modeData = $("modeData");
+  const modeTestcase = $("modeTestcase");
+
+  const dataPanel = $("dataPanel");
+  const testcasePanel = $("testcasePanel");
 
   const db = $("db_url");
   const tbl = $("table_name");
+
   const rows = $("row_count");
   const note = $("user_instruction");
+
+  const tcCount = $("testcase_count");
+  const tcNote = $("testcase_instruction");
+
   const testBtn = $("btnTestConnection");
   const genBtn = $("btnGenerate");
+  const genTcBtn = $("btnGenerateTestcase");
+
   const alertBox = $("alertBox");
   const out = $("resultOutput");
 
   let ok = false;
   let verified = "";
+  let mode = "data";
 
   const showAlert = (message, type = "success") => {
     alertBox.className = `alert ${type}`;
@@ -74,118 +178,360 @@ document.addEventListener("DOMContentLoaded", () => {
     alertBox.textContent = "";
   };
 
+  const refreshActionButtons = () => {
+
+    const canRun =
+      ok &&
+      verified === db.value.trim() &&
+      tbl.value;
+
+    genBtn.disabled = !(canRun && mode === "data");
+
+    genTcBtn.disabled = !(canRun && mode === "testcase");
+  };
+
+  const switchMode = nextMode => {
+
+    mode = nextMode;
+
+    clearAlert();
+
+    out.textContent = "Chưa có dữ liệu.";
+
+    if (mode === "data") {
+
+      pageTitle.textContent = "Sinh dữ liệu ảo";
+
+      dataPanel.classList.remove("hidden");
+      testcasePanel.classList.add("hidden");
+
+      modeData.classList.add("active");
+      modeTestcase.classList.remove("active");
+
+    } else {
+
+      pageTitle.textContent = "Sinh test case";
+
+      dataPanel.classList.add("hidden");
+      testcasePanel.classList.remove("hidden");
+
+      modeData.classList.remove("active");
+      modeTestcase.classList.add("active");
+    }
+
+    refreshActionButtons();
+  };
+
   const resetAfterDbChange = () => {
+
     ok = false;
     verified = "";
-    tbl.innerHTML = '<option value="">-- Chọn bảng --</option>';
+
+    tbl.innerHTML =
+      '<option value="">-- Chọn bảng --</option>';
+
     tbl.disabled = true;
-    genBtn.disabled = true;
+
     out.textContent = "Chưa có dữ liệu.";
+
+    refreshActionButtons();
   };
 
   const post = async (url, data) => {
+
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json"
+      },
       body: JSON.stringify(data)
     });
-    return { res, data: await res.json() };
+
+    return {
+      res,
+      data: await res.json()
+    };
   };
 
+  modeData.addEventListener(
+    "click",
+    () => switchMode("data")
+  );
+
+  modeTestcase.addEventListener(
+    "click",
+    () => switchMode("testcase")
+  );
+
   db.addEventListener("input", () => {
+
     resetAfterDbChange();
+
     clearAlert();
   });
 
-  tbl.addEventListener("change", () => {
-    genBtn.disabled = !(ok && verified === db.value.trim() && tbl.value);
-  });
+  tbl.addEventListener(
+    "change",
+    refreshActionButtons
+  );
 
+  // TEST CONNECTION
   testBtn.addEventListener("click", async () => {
+
     clearAlert();
 
     const db_url = db.value.trim();
+
     if (!db_url) {
-      showAlert("Vui lòng nhập link database.", "error");
+
+      showAlert(
+        "Vui lòng nhập link database.",
+        "error"
+      );
+
       return;
     }
 
     testBtn.disabled = true;
-    testBtn.textContent = "Đang kiểm tra...";
+
+    testBtn.textContent =
+      "Đang kiểm tra...";
 
     try {
-      const { res, data } = await post("/api/test-connection", { db_url });
+
+      const { res, data } =
+        await post(
+          "/api/test-connection",
+          { db_url }
+        );
 
       if (!res.ok || !data.success) {
-        showAlert(data.message || "Kết nối thất bại.", "error");
+
+        showAlert(
+          data.message || "Kết nối thất bại.",
+          "error"
+        );
+
         resetAfterDbChange();
+
         return;
       }
 
       ok = true;
+
       verified = db_url;
 
-      tbl.innerHTML = '<option value="">-- Chọn bảng --</option>';
+      tbl.innerHTML =
+        '<option value="">-- Chọn bảng --</option>';
+
       (data.tables || []).forEach(table => {
-        tbl.innerHTML += `<option value="${table}">${table}</option>`;
+
+        tbl.innerHTML += `
+          <option value="${table}">
+            ${table}
+          </option>
+        `;
       });
 
       tbl.disabled = false;
-      genBtn.disabled = true;
 
-      showAlert(data.message || "Kết nối thành công.");
+      refreshActionButtons();
+
+      showAlert(
+        data.message || "Kết nối thành công."
+      );
+
     } catch (error) {
+
       resetAfterDbChange();
-      showAlert("Không kiểm tra được kết nối.", "error");
+
+      showAlert(
+        "Không kiểm tra được kết nối.",
+        "error"
+      );
+
     } finally {
+
       testBtn.disabled = false;
-      testBtn.textContent = "Kiểm tra kết nối";
+
+      testBtn.textContent =
+        "Kiểm tra kết nối";
     }
   });
 
+  // SINH DỮ LIỆU
   genBtn.addEventListener("click", async () => {
+
     clearAlert();
 
     const db_url = db.value.trim();
+
     const table_name = tbl.value;
+
     const row_count = rows.value.trim();
-    const user_instruction = note.value.trim();
+
+    const user_instruction =
+      note.value.trim();
 
     if (!ok || verified !== db_url) {
-      showAlert("Bạn phải kiểm tra kết nối thành công trước.", "error");
+
+      showAlert(
+        "Bạn phải kiểm tra kết nối thành công trước.",
+        "error"
+      );
+
       return;
     }
 
     if (!table_name) {
-      showAlert("Vui lòng chọn bảng.", "error");
+
+      showAlert(
+        "Vui lòng chọn bảng.",
+        "error"
+      );
+
       return;
     }
 
     genBtn.disabled = true;
-    genBtn.textContent = "Đang sinh dữ liệu...";
+
+    genBtn.textContent =
+      "Đang sinh dữ liệu...";
 
     try {
-      const { res, data } = await post("/api/generate-data", {
-        db_url,
-        table_name,
-        row_count,
-        user_instruction
-      });
+
+      const { res, data } =
+        await post(
+          "/api/generate-data",
+          {
+            db_url,
+            table_name,
+            row_count,
+            user_instruction
+          }
+        );
 
       if (!res.ok || !data.success) {
-        showAlert(data.message || "Sinh dữ liệu thất bại.", "error");
+
+        showAlert(
+          data.message || "Sinh dữ liệu thất bại.",
+          "error"
+        );
+
         return;
       }
 
-      showAlert(data.message || "Sinh dữ liệu thành công.");
-      out.textContent = JSON.stringify(data, null, 2);
+      showAlert(
+        data.message || "Sinh dữ liệu thành công."
+      );
+
+      out.textContent =
+        JSON.stringify(data, null, 2);
+
     } catch (error) {
-      showAlert("Không gọi được API sinh dữ liệu.", "error");
+
+      showAlert(
+        "Không gọi được API sinh dữ liệu.",
+        "error"
+      );
+
     } finally {
-      genBtn.disabled = false;
-      genBtn.textContent = "Sinh dữ liệu";
+
+      genBtn.textContent =
+        "Sinh dữ liệu";
+
+      refreshActionButtons();
     }
   });
+
+  // SINH + CHẠY TESTCASE
+  genTcBtn.addEventListener("click", async () => {
+
+    clearAlert();
+
+    const db_url = db.value.trim();
+
+    const table_name = tbl.value;
+
+    const testcase_count =
+      tcCount.value.trim();
+
+    const testcase_instruction =
+      tcNote.value.trim();
+
+    if (!ok || verified !== db_url) {
+
+      showAlert(
+        "Bạn phải kiểm tra kết nối thành công trước.",
+        "error"
+      );
+
+      return;
+    }
+
+    if (!table_name) {
+
+      showAlert(
+        "Vui lòng chọn bảng.",
+        "error"
+      );
+
+      return;
+    }
+
+    genTcBtn.disabled = true;
+
+    genTcBtn.textContent =
+      "Đang sinh & chạy test case...";
+
+    try {
+
+      const { res, data } =
+        await post(
+          "/api/generate-testcases",
+          {
+            db_url,
+            table_name,
+            testcase_count,
+            testcase_instruction
+          }
+        );
+
+      if (!res.ok || !data.success) {
+
+        showAlert(
+          data.message ||
+          "Sinh test case thất bại.",
+          "error"
+        );
+
+        return;
+      }
+
+      showAlert(
+        data.message ||
+        "Sinh và chạy test case thành công."
+      );
+
+      out.textContent =
+        JSON.stringify(data, null, 2);
+
+    } catch (error) {
+
+      showAlert(
+        "Không gọi được API test case.",
+        "error"
+      );
+
+    } finally {
+
+      genTcBtn.textContent =
+        "Sinh & chạy test case";
+
+      refreshActionButtons();
+    }
+  });
+
 });
 </script>
 </body>

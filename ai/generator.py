@@ -31,22 +31,24 @@ YÊU CẦU THÊM:
     ) if schema.get("foreign_keys") else ""
 
     return f"""
-Sinh đúng {n} dòng dữ liệu mới cho bảng "{schema['table_name']}", không copy mẫu.
+Sinh đúng {n} dòng dữ liệu hợp lệ cho bảng "{schema['table_name']}".
+Chỉ trả về JSON array, không markdown, không giải thích.
 
-YÊU CẦU:
-- ONLY JSON array {n} object
-- Không markdown / giải thích
-- Không null cột NOT NULL
-- DATE: YYYY-MM-DD
-- Mỗi dòng khác mẫu ≥2 cột (không tính PK)
+Quy tắc:
+- Dữ liệu phải INSERT được vào SQL Server.
+- Không NULL ở cột NOT NULL.
+- Đúng kiểu dữ liệu, đúng độ dài cột.
+- Tuân thủ PRIMARY KEY, UNIQUE, FOREIGN KEY, CHECK.
+- DATE/DATETIME dùng YYYY-MM-DD.
+- FOREIGN KEY lấy từ parent_samples.
+- Không copy nguyên dòng mẫu.
 
-Schema:
-{json.dumps(schema, ensure_ascii=False, indent=2, default=str)}
-{fk}
+SCHEMA:
+{json.dumps(schema, ensure_ascii=False, default=str)}
 
-{priority}
+YÊU CẦU THÊM:
+{extra}
 """.strip()
-
 
 def call_ollama(model, prompt, timeout=240):
     ok, _ = check_ollama_available()
@@ -57,7 +59,7 @@ def call_ollama(model, prompt, timeout=240):
         "model": model,
         "prompt": prompt,
         "stream": False,
-        "options": {"temperature": 0.7, "num_predict": 1200},
+        "options": {"temperature": 0.3, "num_predict": 1000},
     }, timeout=timeout)
 
     if r.status_code >= 400:
@@ -90,3 +92,46 @@ def parse_json_from_ollama(txt):
     if isinstance(data, dict): return [data]
     if not isinstance(data, list): raise ValueError("JSON không hợp lệ")
     return data
+
+def build_testcase_prompt(schema, n, user_instruction=""):
+    extra = user_instruction.strip() or "Sinh test case INSERT."
+
+    required_cols = [
+        c["name"] for c in schema["columns"]
+        if not c.get("nullable", True)
+        and str(c.get("autoincrement", "")).lower() != "true"
+    ]
+
+    return f"""
+Sinh đúng {n} test case INSERT cho bảng "{schema['table_name']}".
+Chỉ trả về JSON array, không markdown, không giải thích.
+Nội dung mô tả dùng tiếng Việt.
+
+Format:
+[
+  {{
+    "id": 1,
+    "ten_testcase": "...",
+    "loai_thao_tac": "INSERT",
+    "loai_test": "HỢP_LỆ",
+    "loai_kiem_thu": "...",
+    "du_lieu_test": {{}},
+    "ket_qua_mong_muon": "..."
+  }}
+]
+
+Quy tắc:
+- Chỉ sinh INSERT.
+- loai_test: HỢP_LỆ hoặc KHÔNG_HỢP_LỆ.
+- du_lieu_test phải có đủ cột bắt buộc: {json.dumps(required_cols, ensure_ascii=False)}.
+- HỢP_LỆ: dữ liệu thỏa mãn schema, UNIQUE, FOREIGN KEY, CHECK.
+- KHÔNG_HỢP_LỆ: chỉ làm sai 1 ràng buộc, cột khác hợp lệ.
+- FOREIGN KEY hợp lệ lấy từ parent_samples.
+- Ưu tiên làm đúng yêu cầu thêm của người dùng.
+
+SCHEMA:
+{json.dumps(schema, ensure_ascii=False, default=str)}
+
+YÊU CẦU THÊM:
+{extra}
+""".strip()

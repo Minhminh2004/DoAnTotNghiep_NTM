@@ -159,3 +159,34 @@ pre {
         grid-template-columns: 1fr;
     }
 }
+/* MODE SELECT */
+.mode-box {
+    margin-bottom: 16px;
+    padding: 14px;
+    background: #f7f9ff;
+    border: 1px solid #d8e2ff;
+    border-radius: 14px;
+}
+
+.mode-row {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.btn-mode {
+    background: #6b7280;
+}
+
+.btn-mode.active {
+    background: #1e3a78;
+}
+
+.action-row {
+    margin-top: 8px;
+}
+
+button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
