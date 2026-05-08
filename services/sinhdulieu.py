@@ -30,7 +30,6 @@ def parse_date(v):
         except:
             pass
 
-    # fallback để tránh lỗi sai định dạng ngày
     return date(2000, 1, 1)
 
 
@@ -121,7 +120,6 @@ def fix_unique(rows, schema, engine, table):
         for c in u.get("columns", []):
             unique_cols.append(c)
 
-    # bắt thêm các cột hay unique như Email nếu DB khai báo không lấy được
     for c in schema.get("columns", []):
         name = c["name"]
         if "email" in norm(name):
@@ -221,14 +219,14 @@ def prompt_schema(s,fks):
     x["foreign_key_reference_samples"]=[{
         "child_columns":f["child_columns"],
         "parent_columns":f["parent_columns"],
-        "allowed_examples":f["parent_values"][:8],
+        "allowed_examples":f["parent_values"][:6],
     } for f in fks]
     return x
 
 
 def generate_and_insert_data(db_url,table,n,model="qwen2.5:3b",instr=""):
     engine=create_db_engine(db_url)
-    schema=get_table_schema_and_samples(engine,table,sample_limit=5)
+    schema=get_table_schema_and_samples(engine,table,sample_limit=2)
 
     allowed=[c["name"] for c in schema["columns"]]
     pk=schema.get("primary_keys",[])
