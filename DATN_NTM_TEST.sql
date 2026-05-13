@@ -16,7 +16,7 @@ CREATE TABLE LOP_TEST (
 
 CREATE TABLE SINHVIEN_TEST (
     MaSV INT PRIMARY KEY,
-    HoTen NVARCHAR(100) NOT NULL,
+    HoTen NVARCHAR(100) NOT NULL UNIQUE ,
     Email NVARCHAR(100) NOT NULL UNIQUE CHECK (Email LIKE '%_@_%._%'),
     Tuoi INT NOT NULL CHECK (Tuoi BETWEEN 18 AND 60),
     Diem FLOAT NOT NULL CHECK (Diem BETWEEN 0 AND 10),
@@ -28,12 +28,17 @@ CREATE TABLE SINHVIEN_TEST (
     MaLop INT NOT NULL REFERENCES LOP_TEST(MaLop)
 );
 
-INSERT INTO KHOA_TEST VALUES (1,N'CNTT'),(2,N'Kinh tế');
-INSERT INTO LOP_TEST VALUES (1,N'CNTT01',1),(2,N'KT01',2);
+INSERT INTO KHOA_TEST VALUES 
+(1, N'Công nghệ thông tin'),
+(2, N'Kinh tế');
+
+INSERT INTO LOP_TEST VALUES 
+(1, N'CNTT01', 1),
+(2, N'KT01', 2);
 
 INSERT INTO SINHVIEN_TEST VALUES
-(1,N'Nguyen Văn An','an123@gmail.com',20,8.5,N'Nam','2004-01-01','0912345678',N'Hà Nội',1,1),
-(2,N'Tran Thi Nga','nga102@gmail.com',21,9.0,N'Nữ','2003-02-02','0987654321',N'Hải Phòng',2,2);
+(1, N'Nguyễn Văn An', N'nguyenvanan@gmail.com', 20, 8.5, N'Nam', '2004-01-01', '0912345678', N'Hà Nội', 1, 1),
+(2, N'Trần Thị Nga', N'tranthinga@gmail.com', 21, 9.0, N'Nữ', '2003-02-02', '0987654321', N'Hải Phòng', 2, 2);
 
 SELECT * FROM KHOA_TEST;
 SELECT * FROM LOP_TEST;

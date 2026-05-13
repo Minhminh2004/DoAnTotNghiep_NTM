@@ -86,8 +86,8 @@ def get_table_schema_and_samples(
     engine,
     table,
     schema="dbo",
-    sample_limit=2,
-    fk_limit=2
+    sample_limit=4,
+    fk_limit=4
 ):
     ins = inspect(engine)
 

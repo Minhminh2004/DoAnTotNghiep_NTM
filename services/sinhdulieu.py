@@ -1,273 +1,413 @@
 from datetime import datetime, date
+from decimal import Decimal
 import random
+import uuid
+import re
 from sqlalchemy import MetaData, Table, insert, select
 from db.connection import create_db_engine
 from db.laydulieu import get_table_schema_and_samples
 from ai.generator import build_prompt, call_ollama, parse_json_from_ollama
 from reports.excel_report import save_generated_data_report
 
-norm = lambda x: str(x).strip().lower()
-txt = lambda x: "" if x is None else str(x).strip().lower()
 
-type_map = lambda s: {c["name"]: str(c.get("type","")).lower() for c in s["columns"]}
+def norm(x):
+    return str(x).strip().lower()
+
+
+def txt(x):
+    return "" if x is None else str(x).strip().lower()
+
+
+def split_table_name(table_name, default_schema="dbo"):
+    """
+    Nhận cả: SinhVien, dbo.SinhVien, [dbo].[SinhVien]
+    Trả về: schema, table
+    """
+    raw = str(table_name or "").strip().replace("[", "").replace("]", "")
+    if "." in raw:
+        schema, table = raw.split(".", 1)
+        return schema.strip() or default_schema, table.strip()
+    return default_schema, raw
+
+
+def is_identity_col(col):
+    v = str(col.get("autoincrement", "")).lower()
+    default = str(col.get("default", "")).lower()
+    return v in ("true", "auto", "1") or "identity" in default
+
+
+def type_map(schema):
+    return {c["name"]: str(c.get("type", "")).lower() for c in schema["columns"]}
 
 
 def parse_date(v):
     if v in (None, ""):
         return None
-
     if isinstance(v, datetime):
         return v.date()
-
     if isinstance(v, date):
         return v
-
     s = str(v).strip()
-
     for f in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
         try:
             return datetime.strptime(s, f).date()
-        except:
+        except Exception:
             pass
-
     return date(2000, 1, 1)
 
 
-def cast(v,t):
-    if v in (None,""): return None
-    t=(t or "").lower()
-    if "date" in t: return parse_date(v)
-    if "int" in t: return int(str(v).strip())
-    if any(x in t for x in ("float","real","decimal","numeric")): return float(str(v).strip())
+def cast_value(v, sql_type):
+    if v in (None, ""):
+        return None
+    t = (sql_type or "").lower()
+    if "date" in t or "time" in t:
+        return parse_date(v)
+    if "uniqueidentifier" in t:
+        try:
+            return str(uuid.UUID(str(v)))
+        except Exception:
+            return str(uuid.uuid4())
+    if "bit" in t or "bool" in t:
+        if isinstance(v, bool):
+            return v
+        return str(v).strip().lower() in ("1", "true", "yes", "y", "có", "co")
+    if "int" in t:
+        return int(float(str(v).strip()))
+    if any(x in t for x in ("float", "real", "decimal", "numeric", "money")):
+        return float(str(v).strip().replace(",", "."))
     return str(v).strip()
 
 
-def required_cols(s):
-    fk={c for f in s.get("foreign_keys",[]) for c in f.get("columns",[])}
-    return [c["name"] for c in s["columns"]
-            if not c.get("nullable",True)
-            and str(c.get("autoincrement","")).lower()!="true"
-            and c["name"] not in fk]
+def insertable_columns(schema):
+    # Không insert cột IDENTITY/computed; SQL Server tự sinh.
+    return [c["name"] for c in schema["columns"] if not is_identity_col(c)]
 
 
-def clean_rows(rows,allowed,types,req):
-    amap,tmap={norm(c):c for c in allowed},{norm(k):v for k,v in types.items()}
-    out=[]
-    for r in rows:
-        if not isinstance(r,dict): continue
-        row={c:None for c in allowed}
+def required_cols(schema):
+    return [
+        c["name"] for c in schema["columns"]
+        if not c.get("nullable", True)
+        and not is_identity_col(c)
+        and c.get("default") is None
+    ]
+
+
+def clean_rows(rows, allowed_cols, types, required):
+    amap = {norm(c): c for c in allowed_cols}
+    tmap = {norm(k): v for k, v in types.items()}
+    out = []
+
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        row = {}
         try:
-            for k,v in r.items():
-                if norm(k) in amap:
-                    row[amap[norm(k)]]=cast(v,tmap.get(norm(k),""))
-            if all(row.get(c) not in (None,"",[]) for c in req):
+            for k, v in r.items():
+                nk = norm(k)
+                if nk in amap:
+                    real_col = amap[nk]
+                    row[real_col] = cast_value(v, tmap.get(nk, ""))
+
+            # Chỉ giữ cột insert được, không ép tất cả cột thành None.
+            row = {c: row.get(c) for c in allowed_cols if c in row}
+
+            if all(row.get(c) not in (None, "", []) for c in required):
                 out.append(row)
-        except: pass
+        except Exception:
+            continue
+
     return out
 
 
-def unique(rows):
-    seen,out=set(),[]
-    for r in rows:
-        k=tuple(sorted((k.lower(),str(v)) for k,v in r.items()))
-        if k not in seen: seen.add(k); out.append(r)
-    return out
-
-
-def existing_pk(engine,table,pk,schema="dbo"):
-    if not pk: return {}
-    tb=Table(table,MetaData(),schema=schema,autoload_with=engine)
-    data={norm(p):set() for p in pk}
-    with engine.connect() as c:
-        for r in c.execute(select(tb)).mappings():
-            r={norm(k):v for k,v in r.items()}
-            for p in pk:
-                if r.get(norm(p)) is not None:
-                    data[norm(p)].add(r[norm(p)])
+def existing_pk(engine, table, pk_cols, schema="dbo"):
+    if not pk_cols:
+        return {}
+    tb = Table(table, MetaData(), schema=schema, autoload_with=engine)
+    data = {norm(p): set() for p in pk_cols}
+    with engine.connect() as conn:
+        for r in conn.execute(select(tb)).mappings():
+            rr = {norm(k): v for k, v in r.items()}
+            for p in pk_cols:
+                if rr.get(norm(p)) is not None:
+                    data[norm(p)].add(rr[norm(p)])
     return data
 
 
-def fix_pk(rows,pk,used,types):
-    tmap={norm(k):v for k,v in types.items()}
-    nxt={norm(p):max(used.setdefault(norm(p),{0}))+1
-         for p in pk if "int" in tmap.get(norm(p),"")}
+def fix_pk(rows, pk_cols, used, types, schema):
+    # Chỉ tự sửa PK không phải identity và kiểu int.
+    identity = {norm(c["name"]) for c in schema["columns"] if is_identity_col(c)}
+    tmap = {norm(k): v for k, v in types.items()}
+
+    next_value = {}
+    for p in pk_cols:
+        np = norm(p)
+        if np in identity:
+            continue
+        if "int" in tmap.get(np, ""):
+            vals = [int(x) for x in used.setdefault(np, set()) if isinstance(x, int)] or [0]
+            next_value[np] = max(vals) + 1
+
     for r in rows:
-        keys={norm(k):k for k in r}
-        for p in nxt:
-            if p in keys:
-                while nxt[p] in used[p]: nxt[p]+=1
-                r[keys[p]]=nxt[p]; used[p].add(nxt[p]); nxt[p]+=1
+        keys = {norm(k): k for k in r.keys()}
+        for np, val in next_value.items():
+            if np not in keys:
+                continue
+            while val in used[np]:
+                val += 1
+            r[keys[np]] = val
+            used[np].add(val)
+            next_value[np] = val + 1
     return rows
+
 
 def existing_values(engine, table, columns, schema="dbo"):
+    if not columns:
+        return {}
     tb = Table(table, MetaData(), schema=schema, autoload_with=engine)
-    data = {norm(c): set() for c in columns}
+    data = {tuple(norm(c) for c in cols): set() for cols in columns}
 
-    with engine.connect() as c:
-        for r in c.execute(select(tb)).mappings():
+    with engine.connect() as conn:
+        for r in conn.execute(select(tb)).mappings():
             rr = {norm(k): v for k, v in r.items()}
-            for col in columns:
-                if rr.get(norm(col)) is not None:
-                    data[norm(col)].add(str(rr[norm(col)]).lower())
-
+            for cols in columns:
+                key = tuple(norm(c) for c in cols)
+                val = tuple(txt(rr.get(norm(c))) for c in cols)
+                if all(x != "" for x in val):
+                    data[key].add(val)
     return data
 
 
-def fix_unique(rows, schema, engine, table):
-    unique_cols = []
+def unique_sets(schema):
+    sets = []
+    for u in schema.get("unique_constraints", []) or []:
+        cols = [c for c in u.get("columns", []) if c]
+        if cols:
+            sets.append(cols)
 
-    for u in schema.get("unique_constraints", []):
-        for c in u.get("columns", []):
-            unique_cols.append(c)
-
+    # Dự phòng cho DB introspect thiếu UNIQUE email.
     for c in schema.get("columns", []):
-        name = c["name"]
-        if "email" in norm(name):
-            unique_cols.append(name)
+        if "email" in norm(c["name"]):
+            sets.append([c["name"]])
 
-    unique_cols = list(dict.fromkeys(unique_cols))
+    # Loại trùng, giữ composite unique đúng nghĩa.
+    seen, out = set(), []
+    for cols in sets:
+        key = tuple(norm(c) for c in cols)
+        if key not in seen:
+            seen.add(key)
+            out.append(cols)
+    return out
 
-    if not unique_cols:
+
+def make_unique_value(col, old=None):
+    n = norm(col)
+    suffix = random.randint(100000, 999999)
+    if "email" in n:
+        prefix = re.sub(r"[^a-z0-9]+", "", txt(old)) or "user"
+        return f"{prefix}_{suffix}@example.com"
+    if any(x in n for x in ("phone", "sdt", "dienthoai", "dien_thoai")):
+        return "09" + str(random.randint(10000000, 99999999))
+    return f"{old or col}_{suffix}"
+
+
+def fix_unique(rows, schema, engine, table, db_schema):
+    sets = unique_sets(schema)
+    if not sets:
         return rows
 
-    used = existing_values(engine, table, unique_cols)
+    used = existing_values(engine, table, sets, db_schema)
 
-    for i, r in enumerate(rows, start=1):
-        for col in unique_cols:
-            real_col = next((k for k in r if norm(k) == norm(col)), None)
-            if not real_col:
+    for r in rows:
+        for cols in sets:
+            real_cols = []
+            for col in cols:
+                real = next((k for k in r if norm(k) == norm(col)), None)
+                if real:
+                    real_cols.append(real)
+            if len(real_cols) != len(cols):
                 continue
 
-            val = r.get(real_col)
+            key = tuple(norm(c) for c in cols)
+            val = tuple(txt(r.get(c)) for c in real_cols)
+            if any(x == "" for x in val):
+                continue
 
-            if val is None or str(val).lower() in used.get(norm(col), set()):
-                if "email" in norm(real_col):
-                    new_val = f"test_{random.randint(100000, 999999)}@example.com"
-                else:
-                    new_val = f"{real_col}_{random.randint(100000, 999999)}"
-
-                r[real_col] = new_val
-                used.setdefault(norm(col), set()).add(str(new_val).lower())
-            else:
-                used.setdefault(norm(col), set()).add(str(val).lower())
-
+            if val in used.setdefault(key, set()):
+                # Sửa cột cuối trong nhóm unique để không phá các cột khác.
+                last = real_cols[-1]
+                r[last] = make_unique_value(last, r.get(last))
+                val = tuple(txt(r.get(c)) for c in real_cols)
+            used[key].add(val)
     return rows
 
-def fk_data(engine,fks):
-    out=[]
-    with engine.connect() as c:
+
+def fk_data(engine, fks, default_schema="dbo"):
+    out = []
+    with engine.connect() as conn:
         for f in fks or []:
-            child,table,cols=f.get("columns",[]),f.get("referred_table"),f.get("referred_columns",[])
-            schema=f.get("referred_schema") or "dbo"
-            if not child or not table or not cols: continue
-            tb=Table(table,MetaData(),schema=schema,autoload_with=engine)
-            vals=[{c:r.get(c) for c in cols} for r in c.execute(select(tb)).mappings()]
-            vals=[v for v in vals if all(x is not None for x in v.values())]
-            if vals: out.append({"child_columns":child,"parent_columns":cols,"parent_values":vals})
+            child = f.get("columns", [])
+            parent_table = f.get("referred_table")
+            parent_cols = f.get("referred_columns", [])
+            parent_schema = f.get("referred_schema") or default_schema
+            if not child or not parent_table or not parent_cols:
+                continue
+
+            pt = Table(parent_table, MetaData(), schema=parent_schema, autoload_with=engine)
+            vals = []
+            for r in conn.execute(select(pt)).mappings():
+                item = {c: r.get(c) for c in parent_cols}
+                if all(v is not None for v in item.values()):
+                    vals.append(item)
+
+            if vals:
+                out.append({
+                    "child_columns": child,
+                    "parent_columns": parent_cols,
+                    "parent_values": vals,
+                })
     return out
 
 
-def apply_fk(rows,fks):
+def apply_fk(rows, fks):
     for r in rows:
         for f in fks:
-            p=random.choice(f["parent_values"])
-            for c,pcol in zip(f["child_columns"],f["parent_columns"]):
-                r[c]=p[pcol]
+            parent = random.choice(f["parent_values"])
+            for child_col, parent_col in zip(f["child_columns"], f["parent_columns"]):
+                r[child_col] = parent[parent_col]
     return rows
 
 
-def valid_fk(rows,fks):
-    if not fks: return rows
-    out=[]
+def valid_fk(rows, fks):
+    if not fks:
+        return rows
+    out = []
     for r in rows:
-        ok=True
+        ok = True
         for f in fks:
-            allowed={tuple(v[c] for c in f["parent_columns"]) for v in f["parent_values"]}
-            if tuple(r.get(c) for c in f["child_columns"]) not in allowed:
-                ok=False; break
-        if ok: out.append(r)
+            allowed = {tuple(v[c] for c in f["parent_columns"]) for v in f["parent_values"]}
+            current = tuple(r.get(c) for c in f["child_columns"])
+            if current not in allowed:
+                ok = False
+                break
+        if ok:
+            out.append(r)
     return out
 
 
-def valid_cate(r, req=None):
-    req = req or []
-
-    for c in req:
-        if r.get(c) in (None, "", []):
+def valid_basic(row, required):
+    for c in required:
+        if row.get(c) in (None, "", []):
             return False
-
-    for c, v in r.items():
+    for c, v in row.items():
         if "gioitinh" in norm(c) and v not in (None, "", []):
-            if str(v).lower() not in ("nam", "nữ", "nu"):
+            if str(v).strip().lower() not in ("nam", "nữ", "nu", "female", "male"):
                 return False
-
     return True
 
 
-def too_similar(r,samples,pk):
-    pk={norm(x) for x in pk}
-    for s in samples or []:
-        ks=[k for k in r if k in s and norm(k) not in pk]
-        if ks:
-            same=sum(txt(r[k])==txt(s[k]) for k in ks)
-            if same==len(ks) or (len(ks)>=2 and len(ks)-same<2): return True
+def too_similar(row, samples, pk_cols):
+    pk = {norm(x) for x in pk_cols}
+    for sample in samples or []:
+        ks = [k for k in row if k in sample and norm(k) not in pk]
+        if not ks:
+            continue
+        same = sum(txt(row[k]) == txt(sample[k]) for k in ks)
+        if same == len(ks) or (len(ks) >= 2 and len(ks) - same < 2):
+            return True
     return False
 
 
-def prompt_schema(s,fks):
-    x=dict(s)
-    x["foreign_key_reference_samples"]=[{
-        "child_columns":f["child_columns"],
-        "parent_columns":f["parent_columns"],
-        "allowed_examples":f["parent_values"][:6],
-    } for f in fks]
+def unique_rows(rows):
+    seen, out = set(), []
+    for r in rows:
+        key = tuple(sorted((norm(k), txt(v)) for k, v in r.items()))
+        if key not in seen:
+            seen.add(key)
+            out.append(r)
+    return out
+
+
+def prompt_schema(schema, fks):
+    x = dict(schema)
+    x["foreign_key_reference_samples"] = [
+        {
+            "child_columns": f["child_columns"],
+            "parent_columns": f["parent_columns"],
+            "allowed_examples": f["parent_values"][:10],
+        }
+        for f in fks
+    ]
     return x
 
 
-def generate_and_insert_data(db_url,table,n,model="qwen2.5:3b",instr=""):
-    engine=create_db_engine(db_url)
-    schema=get_table_schema_and_samples(engine,table,sample_limit=2)
-
-    allowed=[c["name"] for c in schema["columns"]]
-    pk=schema.get("primary_keys",[])
-    types=type_map(schema)
-    fks=fk_data(engine,schema.get("foreign_keys",[]))
-    used=existing_pk(engine,table,pk)
-    samples=schema.get("sample_rows",[])
-    req=required_cols(schema)
-    ps=prompt_schema(schema,fks)
-
-    all_rows=[]
-    for _ in range(5):
-        need=n-len(all_rows)
-        if need<=0: break
+def insert_one_by_one(engine, table_obj, rows):
+    inserted, errors = [], []
+    for row in rows:
         try:
-            raw=call_ollama(model,build_prompt(ps,need,instr),timeout=240)
-            rows=parse_json_from_ollama(raw)
-        except: continue
+            with engine.begin() as conn:
+                conn.execute(insert(table_obj), row)
+            inserted.append(row)
+        except Exception as e:
+            errors.append(str(e))
+    return inserted, errors
 
-        rows=clean_rows(rows,allowed,types,req)
-        rows=apply_fk(rows,fks)
-        rows=fix_pk(rows,pk,used,types)
-        rows=fix_unique(rows, schema, engine, table)
-        rows=[r for r in rows if valid_cate(r, req) and not too_similar(r,samples,pk)]
-        rows=valid_fk(rows,fks)
-        all_rows=unique(all_rows+rows)
 
-    if len(all_rows)<n:
-        raise ValueError(f"AI chỉ sinh được {len(all_rows)}/{n}")
+def generate_and_insert_data(db_url, table, n, model="qwen2.5:3b", instr=""):
+    engine = create_db_engine(db_url)
+    db_schema, table_name = split_table_name(table)
 
-    rows=all_rows[:n]
-    tb=Table(table,MetaData(),schema="dbo",autoload_with=engine)
+    schema = get_table_schema_and_samples(engine, table_name, schema=db_schema, sample_limit=5, fk_limit=10)
 
-    with engine.begin() as c:
-        c.execute(insert(tb),rows)
+    allowed = insertable_columns(schema)
+    pk = schema.get("primary_keys", [])
+    types = type_map(schema)
+    fks = fk_data(engine, schema.get("foreign_keys", []), default_schema=db_schema)
+    used_pk = existing_pk(engine, table_name, pk, schema=db_schema)
+    samples = schema.get("sample_rows", [])
+    required = required_cols(schema)
+    ps = prompt_schema(schema, fks)
+    table_obj = Table(table_name, MetaData(), schema=db_schema, autoload_with=engine)
 
-        report_file = save_generated_data_report(table, rows)
+    inserted_rows = []
+    last_errors = []
+
+    # Sinh theo lô, insert từng dòng để dòng lỗi không làm hỏng cả lô.
+    for _ in range(8):
+        need = n - len(inserted_rows)
+        if need <= 0:
+            break
+
+        try:
+            raw = call_ollama(model, build_prompt(ps, max(need * 2, need), instr), timeout=240)
+            rows = parse_json_from_ollama(raw)
+        except Exception as e:
+            last_errors.append(str(e))
+            continue
+
+        rows = clean_rows(rows, allowed, types, required)
+        rows = apply_fk(rows, fks)
+        rows = fix_pk(rows, pk, used_pk, types, schema)
+        rows = fix_unique(rows, schema, engine, table_name, db_schema)
+        rows = [r for r in rows if valid_basic(r, required) and not too_similar(r, samples, pk)]
+        rows = valid_fk(rows, fks)
+        rows = unique_rows(rows)
+
+        if not rows:
+            continue
+
+        ok_rows, errors = insert_one_by_one(engine, table_obj, rows[:need])
+        inserted_rows.extend(ok_rows)
+        last_errors.extend(errors[-3:])
+
+    if len(inserted_rows) < n:
+        detail = "; ".join(last_errors[-2:]) if last_errors else "Không đủ dữ liệu hợp lệ từ AI"
+        raise ValueError(f"AI chỉ sinh và insert được {len(inserted_rows)}/{n}. {detail}")
+
+    report_file = save_generated_data_report(table_name, inserted_rows[:n])
 
     return {
-        "message": f"Đã insert {len(rows)} dòng vào '{table}'",
-        "inserted_count": len(rows),
-        "preview": rows[:2],
-        "excel_report": report_file
+        "message": f"Đã insert {len(inserted_rows[:n])} dòng vào '{db_schema}.{table_name}'",
+        "inserted_count": len(inserted_rows[:n]),
+        "preview": inserted_rows[:2],
+        "excel_report": report_file,
     }

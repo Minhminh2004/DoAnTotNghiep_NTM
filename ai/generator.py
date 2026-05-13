@@ -14,16 +14,22 @@ def check_ollama_available():
 
 
 def build_prompt(schema, n, user_instruction=""):
+    import json
+
     extra = user_instruction.strip()
 
-    priority = f"""
-ƯU TIÊN YÊU CẦU:
-- Làm theo yêu cầu thêm nếu có, không copy dữ liệu mẫu.
-- Vẫn giữ đúng kiểu dữ liệu, ràng buộc.
+    identity_cols = [
+        c["name"]
+        for c in schema.get("columns", [])
+        if str(c.get("autoincrement", "")).lower() == "true"
+    ]
 
-YÊU CẦU THÊM:
-{extra}
-""".strip() if extra else "- Dữ liệu mẫu chỉ để tham khảo, không được copy."
+    required_cols = [
+        c["name"]
+        for c in schema.get("columns", [])
+        if not c.get("nullable", True)
+        and c["name"] not in identity_cols
+    ]
 
     fk = "\nRÀNG BUỘC KHÓA NGOẠI:\n" + "\n".join(
         f"- {f.get('columns', [])} -> {f.get('referred_table')}({f.get('referred_columns', [])})"
@@ -32,27 +38,31 @@ YÊU CẦU THÊM:
 
     return f"""
 Sinh đúng {n} dòng dữ liệu hợp lệ cho bảng "{schema['table_name']}".
-Chỉ trả về JSON array, không markdown, không giải thích.
 
-Quy tắc:
+Chỉ trả về JSON array.
+Không markdown.
+Không giải thích.
+
+QUY TẮC:
 - Dữ liệu phải INSERT được vào SQL Server.
-- Không NULL ở cột NOT NULL.
-- Đúng kiểu dữ liệu, đúng độ dài cột.
+- Đúng tên cột, đúng kiểu dữ liệu.
+- Không NULL ở cột bắt buộc: {required_cols}
 - Tuân thủ PRIMARY KEY, UNIQUE, FOREIGN KEY, CHECK.
 - DATE/DATETIME dùng YYYY-MM-DD.
 - FOREIGN KEY lấy từ parent_samples.
 - Không copy nguyên dòng mẫu.
-- Nếu là dữ liệu người Việt: sinh họ tên Việt Nam thực tế, có dấu, đa dạng.
-- Không dùng tên mẫu kiểu Nguyen Van A, Nguyen Van B, Test, Demo.
-- Không lặp tên trong cùng lần sinh.
-- Email phải khớp tương đối với họ tên, không dùng test@example.com nếu không cần.
+- Dữ liệu phải tự nhiên và hợp lý theo tên bảng/tên cột.
+- Nếu là tên người thì dùng tên Việt Nam thật.
+- Nếu là email thì email hợp lệ và không trùng.
+- Không dùng dữ liệu kiểu Test, Demo, Sample.
 
+{fk}
+
+YÊU CẦU THÊM:
+{extra if extra else "Không có"}
 
 SCHEMA:
 {json.dumps(schema, ensure_ascii=False, default=str)}
-
-YÊU CẦU THÊM:
-{extra}
 """.strip()
 
 def call_ollama(model, prompt, timeout=240):

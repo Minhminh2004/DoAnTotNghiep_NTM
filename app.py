@@ -52,12 +52,15 @@ def gen_data():
         if n <= 0:
             raise ValueError
 
+        # Cho phép frontend truyền model, không hard-code cứng.
+        model = d.get("model", "qwen2.5:3b").strip() or "qwen2.5:3b"
+
         result = generate_and_insert_data(
-            db,
-            tb,
-            n,
-            "qwen2.5:3b",
-            instr
+            db_url=db,
+            table=tb,
+            n=n,
+            model=model,
+            instr=instr
         )
 
         return jsonify(success=True, **result)
@@ -124,4 +127,4 @@ def gen_testcases():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="127.0.0.1", port=5000, debug=True)
